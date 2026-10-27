@@ -243,6 +243,11 @@ static struct ipv4cfg_s g_ipv4cfg;
 #  endif
 #endif
 
+#ifdef CONFIG_NETINIT_THREAD
+static pthread_mutex_t g_netinit_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_netinit_running;
+#endif
+
 #ifdef CONFIG_NETINIT_MONITOR
 static sem_t g_notify_sem;
 #endif
@@ -1134,6 +1139,7 @@ errout_with_socket:
 #endif
   close(sd);
 errout:
+  sem_destroy(&g_notify_sem);
   nerr("ERROR: Aborting\n");
   return ret;
 }
@@ -1163,6 +1169,12 @@ static pthread_addr_t netinit_thread(pthread_addr_t arg)
 #endif
 
   ninfo("Exit\n");
+
+  /* Permit a later caller to retry after this worker has finished. */
+
+  DEBUGVERIFY(pthread_mutex_lock(&g_netinit_lock));
+  g_netinit_running = false;
+  DEBUGVERIFY(pthread_mutex_unlock(&g_netinit_lock));
   return NULL;
 }
 #endif
@@ -1186,6 +1198,23 @@ int netinit_bringup(void)
   pthread_attr_t      attr;
   pthread_t           tid;
   int                 ret;
+
+  /* Consoles share one initializer and monitor for the network device. */
+
+  ret = pthread_mutex_lock(&g_netinit_lock);
+  if (ret != 0)
+    {
+      return -ret;
+    }
+
+  if (g_netinit_running)
+    {
+      pthread_mutex_unlock(&g_netinit_lock);
+      return OK;
+    }
+
+  g_netinit_running = true;
+  pthread_mutex_unlock(&g_netinit_lock);
 
   /* Start the network initialization thread to perform the network bring-up
    * asynchronously.
